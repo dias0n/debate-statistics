@@ -3,7 +3,7 @@ import psycopg2
 import requests
 from dotenv import load_dotenv
 
-# 🔹 Загружаем переменные окружения
+# Загружаем переменные окружения
 load_dotenv()
 
 DB_NAME = os.getenv("DB_NAME")
@@ -15,7 +15,7 @@ DB_PORT = os.getenv("DB_PORT")
 API_URL = os.getenv("API_URL")
 TOKEN = os.getenv("TOKEN_AD")
 
-# 🔹 Подключение к БД
+# БД
 conn = psycopg2.connect(
     dbname=DB_NAME,
     user=DB_USER,
@@ -26,14 +26,18 @@ conn = psycopg2.connect(
 
 cur = conn.cursor()
 
-# Получаем список всех турниров из базы
+# Получаем список всех турниров
 cur.execute("SELECT Tournament_Slug FROM Tournaments;")
 tournaments = cur.fetchall()
 
 for tournament in tournaments:
-    tournament_slug = tournament[0]  # Достаём slug турнира
+    tournament_slug = tournament[0]
 
-    # Делаем запрос к API на получение резолюций
+    # Уже обработанные резолюции
+    cur.execute("SELECT Motion_ID FROM Motions WHERE Tournament_Slug = %s;", (tournament_slug,))
+    processed_motions = {row[0] for row in cur.fetchall()}  # Множество ID обработанных резолюций
+
+    # Резолюции турнира
     url = f"{API_URL}/tournaments/{tournament_slug}/motions"
     headers = {"Authorization": f"Token {TOKEN}"}
     response = requests.get(url, headers=headers)
@@ -43,14 +47,20 @@ for tournament in tournaments:
 
         for motion in motions:
             motion_id = motion["id"]
+
+            # Пропускаем уже обработанные резолюции
+            if motion_id in processed_motions:
+                print(f"⚠️ Резолюция {motion_id} уже добавлена, пропускаем...")
+                continue
+
             info_slide_plain = motion["info_slide_plain"]
             motion_text = motion["text"]
 
-            # 🔹 Инициализируем переменные заранее
+            # Иногда эти значения могут быть неизвестными. Избегаем ошибок кода
             round_number = None
             round_name = None
 
-            # 🔹 Проверяем, есть ли информация о раунде
+            # Проверяем, есть ли информация о раунде
             if "rounds" in motion and motion["rounds"]:
                 round_id = motion["rounds"][0]["round"].split("/")[-1]  # Достаём ID раунда
                 round_url = f"{API_URL}/tournaments/{tournament_slug}/rounds/{round_id}"
@@ -58,24 +68,24 @@ for tournament in tournaments:
 
                 if round_response.status_code == 200:
                     round_data = round_response.json()
-                    round_number = round_data.get("seq", None)  # Получаем номер раунда
-                    round_name = round_data.get("name", None)  # Получаем название раунда
+                    round_number = round_data.get("seq", None)  # Номер раунда
+                    round_name = round_data.get("name", None)  # Название раунда
 
-
+            # Вставляем данные в таблицу
             cur.execute("""
                 INSERT INTO Motions (Motion_ID, Tournament_Slug, Info_Slide_Plain, Motion_Text, Round_Number, Round_Name)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT(Motion_ID) DO NOTHING;
+                VALUES (%s, %s, %s, %s, %s, %s);
             """, (motion_id, tournament_slug, info_slide_plain, motion_text, round_number, round_name))
 
         conn.commit()
-        print(f"✅ Данные о резолюциях для {tournament_slug} успешно сохранены!")
+        print(f"Данные о резолюциях для {tournament_slug} успешно сохранены!")
 
     else:
-        print(f"❌ Ошибка запроса ({response.status_code}): {response.text}")
+        print(f"Ошибка запроса ({response.status_code}): {response.text}")
 
 cur.close()
 conn.close()
+
 
 
 
